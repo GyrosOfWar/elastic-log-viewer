@@ -35,6 +35,7 @@ const LogViewer = () => {
   )
   const [form, setForm] = useState<FormState>({})
   const [selectedDetails, setSelectedDetails] = useState<Hit | null>(null)
+  const [autoRefresh, setAutoRefresh] = useState(false)
 
   const handleClose = () => setSelectedDetails(null)
 
@@ -46,14 +47,19 @@ const LogViewer = () => {
     setSelectedDetails(row)
   }
 
-  const handleSubmit = async (e?: React.ChangeEvent<any>) => {
-    e?.preventDefault()
-
+  const getParams = () => {
     const params = new URLSearchParams()
     Object.entries(form)
       .filter((pair) => Boolean(pair[1]))
       .forEach(([key, value]) => params.set(key, value))
     params.set("size", "100")
+
+    return params
+  }
+
+  const handleSubmit = async (e?: React.ChangeEvent<any>) => {
+    e?.preventDefault()
+    const params = getParams()
 
     try {
       await refetch({
@@ -75,6 +81,19 @@ const LogViewer = () => {
         [name]: value,
       }
     })
+  }
+
+  const onCheckboxChange = (e: React.ChangeEvent<any>) => {
+    const checked = e.target.checked
+    setAutoRefresh(checked)
+    if (checked) {
+      window.setInterval(async () => {
+        const params = getParams()
+        await refetch({
+          url: `/api/v1/logs?${params.toString()}`,
+        })
+      }, 5000)
+    }
   }
 
   return (
@@ -132,7 +151,7 @@ const LogViewer = () => {
               onChange={(e) => handleChange(e, "endDate")}
             />
           </Col>
-          <Col>
+          <Col md="auto">
             <Button variant="success" disabled={loading} type="submit">
               {loading && (
                 <Spinner animation="border" role="status" size="sm">
@@ -141,6 +160,16 @@ const LogViewer = () => {
               )}{" "}
               Filter
             </Button>
+          </Col>
+
+          <Col>
+            <Form.Check
+              checked={autoRefresh}
+              type="checkbox"
+              label="Auto refresh"
+              inline
+              onChange={onCheckboxChange}
+            />
           </Col>
         </Form.Row>
       </Form>
