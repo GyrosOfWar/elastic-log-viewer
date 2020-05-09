@@ -2,6 +2,7 @@ use chrono::prelude::*;
 use elasticsearch::{http::transport::Transport, Elasticsearch, SearchParts};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::error::Error;
 use std::sync::Arc;
@@ -12,6 +13,19 @@ pub type WarpResult<T> = std::result::Result<T, warp::Rejection>;
 pub type ElasticResult<T> = std::result::Result<T, elasticsearch::Error>;
 
 const CONFIG_FILE: &str = "log-viewer.json";
+
+pub fn fix_property_keys(mut log_line: Value) -> Value {
+    use heck::MixedCase;
+
+    let obj = log_line
+        .as_object_mut()
+        .expect("Cannot fix property keys on a not-object");
+    let new_obj: BTreeMap<_, _> = obj
+        .into_iter()
+        .map(|(k, v)| (k.replace('.', " ").to_mixed_case(), v))
+        .collect();
+    json!(new_obj)
+}
 
 #[derive(Deserialize, Debug)]
 pub struct ElasticsearchResponse<T> {
@@ -165,7 +179,16 @@ pub async fn fetch_logs(
 
     let body: ElasticsearchResponse<Value> = response.read_body().await?;
 
-    Ok(body.hits.hits)
+    Ok(body
+        .hits
+        .hits
+        .into_iter()
+        .map(|hit| Hit {
+            id: hit.id,
+            sort: hit.sort,
+            source: fix_property_keys(hit.source),
+        })
+        .collect())
 }
 
 pub async fn get_logs(context: Arc<Context>, filter: SearchFilter) -> WarpResult<impl warp::Reply> {
