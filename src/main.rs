@@ -23,11 +23,13 @@ pub struct Hits<T> {
     pub hits: Vec<Hit<T>>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Hit<T> {
     #[serde(rename = "_source")]
     pub source: T,
     pub sort: Option<Vec<Value>>,
+    #[serde(rename = "_id")]
+    pub id: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -76,11 +78,12 @@ impl Default for Order {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SearchFilter {
-    pub query: Option<String>,
-    pub start_date: Option<DateTime<Utc>>,
-    pub end_date: Option<DateTime<Utc>>,
     pub size: u64,
+    pub query: Option<String>,
+    pub start_date: Option<NaiveDate>,
+    pub end_date: Option<NaiveDate>,
     pub search_after: Option<Vec<Value>>,
     #[serde(default)]
     pub order: Order,
@@ -100,21 +103,23 @@ impl SearchFilter {
 
         if self.start_date.is_some() || self.end_date.is_some() {
             let start = if let Some(start) = self.start_date {
-                Some(start.to_rfc3339())
+                Some(start)
             } else {
                 None
             };
 
             let end = if let Some(end) = self.end_date {
-                Some(end.to_rfc3339())
+                Some(end)
             } else {
                 None
             };
 
             clauses.push(json!({
                 "range": {
-                    "gte": start,
-                    "lte": end,
+                    "@timestamp": {
+                        "gte": start,
+                        "lte": end,
+                    }
                 }
             }));
         }
@@ -132,7 +137,7 @@ impl SearchFilter {
         if let Some(after) = self.search_after {
             query["search_after"] = json!(after);
         }
-
+        log::debug!("query object: {}", query);
         query
     }
 }
@@ -151,7 +156,7 @@ pub async fn fetch_logs(
     elastic: &Elasticsearch,
     index_pattern: &str,
     filter: SearchFilter,
-) -> ElasticResult<Vec<Value>> {
+) -> ElasticResult<Vec<Hit<Value>>> {
     let response = elastic
         .search(SearchParts::Index(&[index_pattern]))
         .body(filter.into_query_object())
@@ -159,12 +164,13 @@ pub async fn fetch_logs(
         .await?;
 
     let body: ElasticsearchResponse<Value> = response.read_body().await?;
-    let hits = body.hits.hits.into_iter().map(|h| h.source).collect();
 
-    Ok(hits)
+    Ok(body.hits.hits)
 }
 
 pub async fn get_logs(context: Arc<Context>, filter: SearchFilter) -> WarpResult<impl warp::Reply> {
+    log::info!("getting logs for filter {:?}", filter);
+
     let hits = fetch_logs(&context.elastic, &context.config.index_pattern, filter)
         .await
         .map_err(|e| warp::reject::custom(ElasticsearchError(e)))?;
@@ -181,7 +187,10 @@ fn with_context(
 #[tokio::main]
 async fn main() -> IoResult<()> {
     let config = Config::read()?;
-    simple_logger::init_with_level(config.log_level)?;
+    std::env::set_var("RUST_LOG", format!("{},hyper=warn", config.log_level));
+    env_logger::init();
+
+    log::debug!("Starting with config {:?}", config);
 
     let transport = Transport::single_node(&config.elastic_url)?;
     let elastic = Elasticsearch::new(transport);
