@@ -93,6 +93,12 @@ impl Default for Order {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AutoRefreshFilter {
+    pub search_after: Vec<Value>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SearchFilter {
     pub size: u64,
     pub query: Option<String>,
@@ -201,6 +207,10 @@ pub async fn get_logs(context: Arc<Context>, filter: SearchFilter) -> WarpResult
     Ok(warp::reply::json(&hits))
 }
 
+pub async fn refresh_logs(context: Arc<Context>, filter: AutoRefreshFilter) -> WarpResult<String> {
+    Ok("test".into())
+}
+
 fn with_context(
     context: Arc<Context>,
 ) -> impl Filter<Extract = (Arc<Context>,), Error = Infallible> + Clone {
@@ -221,11 +231,16 @@ async fn main() -> IoResult<()> {
     let context = Arc::new(Context { config, elastic });
 
     let log_route = warp::path!("api" / "v1" / "logs")
-        .and(with_context(context))
+        .and(with_context(context.clone()))
         .and(warp::query::<SearchFilter>())
         .and_then(get_logs);
 
-    let routes = warp::get().and(log_route);
+    let refresh_logs_route = warp::path!("api" / "v1" / "logs" / "new")
+        .and(with_context(context))
+        .and(warp::query::<AutoRefreshFilter>())
+        .and_then(refresh_logs);
+
+    let routes = warp::get().and(log_route.or(refresh_logs_route));
 
     warp::serve(routes).run(([127, 0, 0, 1], 3030)).await;
 

@@ -1,47 +1,13 @@
 import React, {useState} from "react"
 import useAxios from "axios-hooks"
-import {
-  Table,
-  Container,
-  Alert,
-  Button,
-  Modal,
-} from "react-bootstrap"
-import {RouteComponentProps} from "react-router-dom"
+import {Table, Container, Alert, Button, Modal} from "react-bootstrap"
+import {RouteComponentProps, Link} from "react-router-dom"
 import {ExternalLink} from "react-feather"
 import qs from "qs"
 
 import {AbsoluteDateTime} from "../DateHelpers"
 import LogFilter from "./LogFilter"
-
-type FormControlElement =
-  | HTMLInputElement
-  | HTMLSelectElement
-  | HTMLTextAreaElement
-
-interface FormState {
-  query?: string
-  startDate?: string
-  endDate?: string
-  size?: number
-}
-
-// TODO create a mapping from those properties to elastic properties
-interface LogLine {
-  timestamp: string
-  eventDataset: string
-  logLevel: string
-  logLogger: string
-  message: string
-  serviceName: string
-  [key: string]: any
-}
-
-interface Hit {
-  _source: any
-  _id: string
-  sort?: Array<LogLine>
-}
+import {Hit, LogLine, FormState, FormControlElement, logLineMapping} from "./types"
 
 const TableRow: React.FC<{row: Hit; onRowClicked: (row: Hit) => void}> = ({
   row,
@@ -56,6 +22,31 @@ const TableRow: React.FC<{row: Hit; onRowClicked: (row: Hit) => void}> = ({
       <td>{data.serviceName}</td>
       <td>{data.message}</td>
     </tr>
+  )
+}
+
+function convertKey(key: string): string {
+  return logLineMapping[key] || key
+}
+
+const KeyValueEntry: React.FC<{keyName: string; value: any}> = ({
+  keyName,
+  value,
+}) => {
+  const params = {
+    query: `${convertKey(keyName)}: "${value}"`,
+  }
+  return (
+    <li>
+      <strong>{keyName}:</strong> {JSON.stringify(value)}{" "}
+      <Link
+        to={{
+          search: stringifyQuery(params),
+        }}
+      >
+        <ExternalLink size={16} />
+      </Link>
+    </li>
   )
 }
 
@@ -76,10 +67,7 @@ const DetailModal: React.FC<{
       {selectedDetails && (
         <ul>
           {Object.entries(selectedDetails._source).map(([key, value]) => (
-            <li key={key}>
-              <strong>{key}:</strong> {JSON.stringify(value)}{" "}              
-              <ExternalLink size={16} />
-            </li>
+            <KeyValueEntry key={key} keyName={key} value={value} />
           ))}
         </ul>
       )}
@@ -109,12 +97,12 @@ function stringifyQuery(query: any): string {
 
 const LogViewer: React.FC<RouteComponentProps> = ({location}) => {
   const params = parseQuery(location.search)
-  params.size = 100;
+  params.size = 100
 
   const [{data, loading, error}, refetch] = useAxios<Array<Hit>>(
     `/api/v1/logs${stringifyQuery(params)}`
   )
-  const [form, setForm] = useState<FormState>({size: 100})
+  const [form, setForm] = useState<FormState>(params)
   const [selectedDetails, setSelectedDetails] = useState<Hit | null>(null)
   const [autoRefresh, setAutoRefresh] = useState(false)
 
@@ -176,6 +164,7 @@ const LogViewer: React.FC<RouteComponentProps> = ({location}) => {
         handleChange={handleChange}
         handleSubmit={handleSubmit}
         loading={loading}
+        state={form}
       />
 
       <Table size="sm" striped>
