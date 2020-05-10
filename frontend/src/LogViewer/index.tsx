@@ -1,26 +1,34 @@
-import React, {useState} from "react"
-import useAxios from "axios-hooks"
+import React, {useState, useEffect} from "react"
 import {Table, Container, Alert, Button, Modal} from "react-bootstrap"
 import {RouteComponentProps, Link} from "react-router-dom"
 import {ExternalLink} from "react-feather"
 import qs from "qs"
+import axios from "axios"
 
 import {AbsoluteDateTime} from "../DateHelpers"
 import LogFilter from "./LogFilter"
-import {Hit, LogLine, FormState, FormControlElement, logLineMapping} from "./types"
+import {
+  Hit,
+  LogLine,
+  FormState,
+  FormControlElement,
+  logLineMapping,
+} from "./types"
+import "./index.css"
 
 const TableRow: React.FC<{row: Hit; onRowClicked: (row: Hit) => void}> = ({
   row,
   onRowClicked,
 }) => {
   const data: LogLine = row._source
+  const message = row.highlight?.message[0] || data.message
 
   return (
     <tr onClick={() => onRowClicked(row)}>
       <td>{<AbsoluteDateTime timestamp={data.timestamp} />}</td>
       <td>{data.logLevel}</td>
       <td>{data.serviceName}</td>
-      <td>{data.message}</td>
+      <td dangerouslySetInnerHTML={{__html: message}} />
     </tr>
   )
 }
@@ -95,16 +103,40 @@ function stringifyQuery(query: any): string {
   })
 }
 
-const LogViewer: React.FC<RouteComponentProps> = ({location}) => {
+interface State {
+  loading: boolean
+  data?: Array<Hit>
+  error?: any
+}
+
+const LogViewer: React.FC<RouteComponentProps> = ({location, history}) => {
   const params = parseQuery(location.search)
   params.size = 100
 
-  const [{data, loading, error}, refetch] = useAxios<Array<Hit>>(
-    `/api/v1/logs${stringifyQuery(params)}`
-  )
+  const [{data, loading, error}, setData] = useState<State>({loading: true})
   const [form, setForm] = useState<FormState>(params)
   const [selectedDetails, setSelectedDetails] = useState<Hit | null>(null)
-  const [autoRefresh, setAutoRefresh] = useState(false)
+
+  async function fetchLogs(filter: FormState) {
+    const params = stringifyQuery(filter)
+    try {
+      const response = await axios.get(`/api/v1/logs${params}`)
+      setData({
+        error: undefined,
+        loading: false,
+        data: response.data,
+      })
+    } catch (err) {
+      setData({error: err, loading: false})
+    }
+  }
+
+  useEffect(() => {
+    const query = parseQuery(location.search)
+    query.size = 100
+
+    fetchLogs(query).catch(console.error)
+  }, [location.search])
 
   if (error) {
     return <Alert variant="danger">{error.message}</Alert>
@@ -114,16 +146,13 @@ const LogViewer: React.FC<RouteComponentProps> = ({location}) => {
     setSelectedDetails(row)
   }
 
+  // FIXME why does this not set the correct form state?
   const handleSubmit = async (e?: React.ChangeEvent<any>) => {
     e?.preventDefault()
-
-    try {
-      await refetch({
-        url: `/api/v1/logs${stringifyQuery(form)}`,
-      })
-    } catch (error) {
-      console.error(error)
-    }
+    history.push({
+      search: stringifyQuery(form),
+    })
+    setForm(form)
   }
 
   const handleChange = (
@@ -141,13 +170,18 @@ const LogViewer: React.FC<RouteComponentProps> = ({location}) => {
 
   const onCheckboxChange = (e: React.ChangeEvent<any>) => {
     const checked = e.target.checked
-    setAutoRefresh(checked)
+    setForm((oldForm) => {
+      return {
+        ...oldForm,
+        autoRefresh: checked,
+      }
+    })
     if (checked) {
-      window.setInterval(async () => {
-        await refetch({
-          url: `/api/v1/logs${stringifyQuery(form)}`,
-        })
-      }, 5000)
+      // window.setInterval(async () => {
+      //   await refetch({
+      //     url: `/api/v1/logs${stringifyQuery(form)}`,
+      //   })
+      // }, 5000)
     }
   }
 
@@ -159,7 +193,6 @@ const LogViewer: React.FC<RouteComponentProps> = ({location}) => {
       />
       <h1 className="mb-3 mt-1">Logs</h1>
       <LogFilter
-        autoRefresh={autoRefresh}
         onCheckboxChange={onCheckboxChange}
         handleChange={handleChange}
         handleSubmit={handleSubmit}

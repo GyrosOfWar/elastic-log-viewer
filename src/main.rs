@@ -1,50 +1,18 @@
-use chrono::prelude::*;
-use elasticsearch::{http::transport::Transport, Elasticsearch, SearchParts};
+use crate::elastic::{LogClient, SearchFilter};
+use elasticsearch::{http::transport::Transport, Elasticsearch};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
-use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::error::Error;
 use std::sync::Arc;
 use warp::{reject::Reject, Filter};
+
+mod elastic;
 
 pub type IoResult<T> = std::result::Result<T, Box<dyn Error>>;
 pub type WarpResult<T> = std::result::Result<T, warp::Rejection>;
 pub type ElasticResult<T> = std::result::Result<T, elasticsearch::Error>;
 
 const CONFIG_FILE: &str = "log-viewer.json";
-
-pub fn fix_property_keys(mut log_line: Value) -> Value {
-    use heck::MixedCase;
-
-    let obj = log_line
-        .as_object_mut()
-        .expect("Cannot fix property keys on a not-object");
-    let new_obj: BTreeMap<_, _> = obj
-        .into_iter()
-        .map(|(k, v)| (k.replace('.', " ").to_mixed_case(), v))
-        .collect();
-    json!(new_obj)
-}
-
-#[derive(Deserialize, Debug)]
-pub struct ElasticsearchResponse<T> {
-    pub hits: Hits<T>,
-}
-
-#[derive(Deserialize, Debug)]
-pub struct Hits<T> {
-    pub hits: Vec<Hit<T>>,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct Hit<T> {
-    #[serde(rename = "_source")]
-    pub source: T,
-    pub sort: Option<Vec<Value>>,
-    #[serde(rename = "_id")]
-    pub id: String,
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -78,137 +46,30 @@ impl Config {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum Order {
-    Asc,
-    Desc,
-}
-
-impl Default for Order {
-    fn default() -> Self {
-        Order::Desc
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AutoRefreshFilter {
-    pub search_after: Vec<Value>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SearchFilter {
-    pub size: u64,
-    pub query: Option<String>,
-    pub start_date: Option<NaiveDate>,
-    pub end_date: Option<NaiveDate>,
-    pub search_after: Option<Vec<Value>>,
-    #[serde(default)]
-    pub order: Order,
-}
-
-impl SearchFilter {
-    pub fn into_query_object(self) -> Value {
-        let mut clauses = vec![];
-
-        if let Some(query) = self.query {
-            clauses.push(json!({
-                "simple_query_string": {
-                    "query": query
-                }
-            }))
-        }
-
-        if self.start_date.is_some() || self.end_date.is_some() {
-            let start = if let Some(start) = self.start_date {
-                Some(start)
-            } else {
-                None
-            };
-
-            let end = if let Some(end) = self.end_date {
-                Some(end)
-            } else {
-                None
-            };
-
-            clauses.push(json!({
-                "range": {
-                    "@timestamp": {
-                        "gte": start,
-                        "lte": end,
-                    }
-                }
-            }));
-        }
-
-        let mut query = json!({
-            "query": {
-                "bool": {
-                    "must": clauses
-                }
-            },
-            "size": self.size,
-            "sort": {"@timestamp": {"order": self.order}},
-        });
-
-        if let Some(after) = self.search_after {
-            query["search_after"] = json!(after);
-        }
-        log::debug!("query object: {}", query);
-        query
-    }
-}
-
 #[derive(Debug)]
 pub struct ElasticsearchError(elasticsearch::Error);
 
 impl Reject for ElasticsearchError {}
 
 pub struct Context {
-    elastic: Elasticsearch,
-    config: Config,
+    pub log_client: LogClient,
+    pub config: Config,
 }
 
-pub async fn fetch_logs(
-    elastic: &Elasticsearch,
-    index_pattern: &str,
-    filter: SearchFilter,
-) -> ElasticResult<Vec<Hit<Value>>> {
-    let response = elastic
-        .search(SearchParts::Index(&[index_pattern]))
-        .body(filter.into_query_object())
-        .send()
-        .await?;
-
-    let body: ElasticsearchResponse<Value> = response.read_body().await?;
-
-    Ok(body
-        .hits
-        .hits
-        .into_iter()
-        .map(|hit| Hit {
-            id: hit.id,
-            sort: hit.sort,
-            source: fix_property_keys(hit.source),
-        })
-        .collect())
+fn to_rejection(error: elasticsearch::Error) -> warp::Rejection {
+    warp::reject::custom(ElasticsearchError(error))
 }
 
 pub async fn get_logs(context: Arc<Context>, filter: SearchFilter) -> WarpResult<impl warp::Reply> {
     log::info!("getting logs for filter {:?}", filter);
 
-    let hits = fetch_logs(&context.elastic, &context.config.index_pattern, filter)
+    let hits = context
+        .log_client
+        .fetch_logs(&context.config.index_pattern, filter)
         .await
-        .map_err(|e| warp::reject::custom(ElasticsearchError(e)))?;
+        .map_err(to_rejection)?;
 
     Ok(warp::reply::json(&hits))
-}
-
-pub async fn refresh_logs(context: Arc<Context>, filter: AutoRefreshFilter) -> WarpResult<String> {
-    Ok("test".into())
 }
 
 fn with_context(
@@ -227,20 +88,16 @@ async fn main() -> IoResult<()> {
 
     let transport = Transport::single_node(&config.elastic_url)?;
     let elastic = Elasticsearch::new(transport);
+    let log_client = LogClient::new(elastic);
 
-    let context = Arc::new(Context { config, elastic });
+    let context = Arc::new(Context { config, log_client });
 
     let log_route = warp::path!("api" / "v1" / "logs")
         .and(with_context(context.clone()))
         .and(warp::query::<SearchFilter>())
         .and_then(get_logs);
 
-    let refresh_logs_route = warp::path!("api" / "v1" / "logs" / "new")
-        .and(with_context(context))
-        .and(warp::query::<AutoRefreshFilter>())
-        .and_then(refresh_logs);
-
-    let routes = warp::get().and(log_route.or(refresh_logs_route));
+    let routes = warp::get().and(log_route);
 
     warp::serve(routes).run(([127, 0, 0, 1], 3030)).await;
 

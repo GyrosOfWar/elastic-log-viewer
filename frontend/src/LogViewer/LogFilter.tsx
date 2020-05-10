@@ -6,7 +6,6 @@ interface LogFilterProps {
   handleChange: (e: React.ChangeEvent<any>, name: string) => void
   handleSubmit: (e: React.ChangeEvent<any>) => void
   loading: boolean
-  autoRefresh: boolean
   onCheckboxChange: React.EventHandler<React.ChangeEvent<any>>
   state: FormState
 }
@@ -15,7 +14,6 @@ const LogFilter: React.FC<LogFilterProps> = ({
   handleChange,
   handleSubmit,
   loading,
-  autoRefresh,
   onCheckboxChange,
   state,
 }) => {
@@ -27,7 +25,7 @@ const LogFilter: React.FC<LogFilterProps> = ({
             placeholder="Query"
             name="query"
             onChange={(e) => handleChange(e, "query")}
-            value={state.query}
+            value={state.query || ""}
           />
         </Col>
         <Col>
@@ -36,7 +34,7 @@ const LogFilter: React.FC<LogFilterProps> = ({
             name="startDate"
             type="date"
             onChange={(e) => handleChange(e, "startDate")}
-            value={state.startDate}
+            value={state.startDate || ""}
           />
         </Col>
         <Col>
@@ -45,7 +43,7 @@ const LogFilter: React.FC<LogFilterProps> = ({
             name="endDate"
             type="date"
             onChange={(e) => handleChange(e, "endDate")}
-            value={state.endDate}
+            value={state.endDate || ""}
           />
         </Col>
         <Col md="auto">
@@ -61,7 +59,7 @@ const LogFilter: React.FC<LogFilterProps> = ({
 
         <Col style={{alignSelf: "center"}}>
           <Form.Check
-            checked={autoRefresh}
+            checked={state.autoRefresh || false}
             type="checkbox"
             label="Auto refresh"
             inline
