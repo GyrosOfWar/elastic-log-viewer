@@ -144,7 +144,7 @@ impl LogClient {
             .send()
             .await?;
 
-        let body: ElasticsearchResponse<Value> = response.read_body().await?;
+        let body: ElasticsearchResponse<Value> = response.json().await?;
 
         Ok(body
             .hits
